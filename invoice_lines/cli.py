@@ -2,7 +2,8 @@
 
 Reads a CSV of line items (description, quantity, unit_price, line_total)
 and flags any row where quantity * unit_price does not match the stated
-line_total, within a small tolerance for rounding.
+line_total, within a small tolerance for rounding. An optional per-row
+tax_rate column is folded into the expected total when present.
 """
 
 import argparse
@@ -45,50 +46,69 @@ def load_line_items(path):
             raise SystemExit(
                 f"invoice-lines: missing required column(s): {', '.join(missing)}"
             )
+        has_tax_rate = "tax_rate" in (reader.fieldnames or [])
         for row_number, row in enumerate(reader, start=2):
             try:
                 quantity = parse_decimal(row["quantity"], "quantity", row_number)
                 unit_price = parse_decimal(row["unit_price"], "unit_price", row_number)
                 line_total = parse_decimal(row["line_total"], "line_total", row_number)
+                tax_rate = None
+                if has_tax_rate:
+                    raw_tax_rate = row.get("tax_rate")
+                    if raw_tax_rate is not None and raw_tax_rate.strip():
+                        tax_rate = parse_decimal(raw_tax_rate, "tax_rate", row_number)
+                    else:
+                        tax_rate = Decimal("0")
             except RowError as exc:
                 errors.append({"row": exc.row_number, "message": exc.message})
                 continue
-            items.append(
-                {
-                    "row": row_number,
-                    "description": row["description"].strip(),
-                    "quantity": quantity,
-                    "unit_price": unit_price,
-                    "line_total": line_total,
-                }
-            )
+            item = {
+                "row": row_number,
+                "description": row["description"].strip(),
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "line_total": line_total,
+            }
+            if tax_rate is not None:
+                item["tax_rate"] = tax_rate
+            items.append(item)
     return items, errors
+
+
+def expected_total(item):
+    """Quantity * unit price, plus tax if the row carries a tax_rate."""
+    base = item["quantity"] * item["unit_price"]
+    tax_rate = item.get("tax_rate")
+    if tax_rate is None:
+        return base
+    return base * (1 + tax_rate)
 
 
 def find_mismatches(items, tolerance):
     mismatches = []
     for item in items:
-        expected = item["quantity"] * item["unit_price"]
+        expected = expected_total(item)
         difference = (expected - item["line_total"]).copy_abs()
         if difference > tolerance:
-            mismatches.append(
-                {
-                    "row": item["row"],
-                    "description": item["description"],
-                    "quantity": item["quantity"],
-                    "unit_price": item["unit_price"],
-                    "line_total": item["line_total"],
-                    "expected_total": expected.quantize(CENT),
-                    "difference": difference.quantize(CENT),
-                }
-            )
+            mismatch = {
+                "row": item["row"],
+                "description": item["description"],
+                "quantity": item["quantity"],
+                "unit_price": item["unit_price"],
+                "line_total": item["line_total"],
+                "expected_total": expected.quantize(CENT),
+                "difference": difference.quantize(CENT),
+            }
+            if "tax_rate" in item:
+                mismatch["tax_rate"] = item["tax_rate"]
+            mismatches.append(mismatch)
     return mismatches
 
 
 def build_report(path, items, errors, mismatches, tolerance):
     subtotal = sum((item["line_total"] for item in items), Decimal("0")).quantize(CENT)
     expected_subtotal = sum(
-        (item["quantity"] * item["unit_price"] for item in items), Decimal("0")
+        (expected_total(item) for item in items), Decimal("0")
     ).quantize(CENT)
     return {
         "file": path,

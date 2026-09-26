@@ -22,6 +22,17 @@ Widget A,25,4.00,100.50
 Support retainer,1,500.00,500.00
 ```
 
+An optional `tax_rate` column can be added if line totals are tax-inclusive.
+When present, the expected total for a row becomes
+`quantity * unit_price * (1 + tax_rate)`. A blank tax_rate on a given row is
+treated as 0.
+
+```
+description,quantity,unit_price,tax_rate,line_total
+Consulting hours,10,150.00,0.08,1620.00
+Widget A,25,4.00,,100.00
+```
+
 Run it:
 
 ```
@@ -81,8 +92,8 @@ Python 3.9+. No third-party dependencies.
 
 ## Status
 
-Early. Currently handles the single case of `quantity * unit_price ==
-line_total`. See the issues for what's planned next (tax lines, discounts,
+Early. Handles `quantity * unit_price == line_total`, plus an optional
+per-row tax rate. See the issues for what's planned next (discounts,
 multiple currencies).
 
 ## License

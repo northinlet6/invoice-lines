@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from decimal import Decimal
 
-from invoice_lines.cli import find_mismatches, load_line_items
+from invoice_lines.cli import expected_total, find_mismatches, load_line_items
 
 
 def write_csv(lines):
@@ -82,6 +82,50 @@ class LoadLineItemsTests(unittest.TestCase):
         self.assertEqual(items[0]["description"], "Widget A")
         self.assertEqual(items[0]["quantity"], Decimal("10"))
 
+    def test_tax_rate_column_is_parsed_when_present(self):
+        path = self.make_csv(
+            [
+                "description,quantity,unit_price,tax_rate,line_total",
+                "Widget A,10,1.50,0.10,16.50",
+            ]
+        )
+        items, errors = load_line_items(path)
+        self.assertEqual(errors, [])
+        self.assertEqual(items[0]["tax_rate"], Decimal("0.10"))
+
+    def test_blank_tax_rate_defaults_to_zero(self):
+        path = self.make_csv(
+            [
+                "description,quantity,unit_price,tax_rate,line_total",
+                "Widget A,10,1.50,,15.00",
+            ]
+        )
+        items, errors = load_line_items(path)
+        self.assertEqual(errors, [])
+        self.assertEqual(items[0]["tax_rate"], Decimal("0"))
+
+    def test_invalid_tax_rate_becomes_error_and_is_skipped(self):
+        path = self.make_csv(
+            [
+                "description,quantity,unit_price,tax_rate,line_total",
+                "Widget A,10,1.50,ten percent,16.50",
+            ]
+        )
+        items, errors = load_line_items(path)
+        self.assertEqual(items, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("tax_rate", errors[0]["message"])
+
+    def test_no_tax_rate_key_when_column_absent(self):
+        path = self.make_csv(
+            [
+                "description,quantity,unit_price,line_total",
+                "Widget A,10,1.50,15.00",
+            ]
+        )
+        items, errors = load_line_items(path)
+        self.assertNotIn("tax_rate", items[0])
+
 
 class FindMismatchesTests(unittest.TestCase):
     def test_no_mismatches_when_totals_match(self):
@@ -158,6 +202,42 @@ class FindMismatchesTests(unittest.TestCase):
         ]
         mismatches = find_mismatches(items, Decimal("0.01"))
         self.assertEqual([m["row"] for m in mismatches], [3])
+
+    def test_tax_rate_is_folded_into_expected_total(self):
+        item = {
+            "row": 2,
+            "description": "Widget A",
+            "quantity": Decimal("10"),
+            "unit_price": Decimal("1.50"),
+            "tax_rate": Decimal("0.10"),
+            "line_total": Decimal("16.50"),
+        }
+        self.assertEqual(expected_total(item), Decimal("16.500"))
+        self.assertEqual(find_mismatches([item], Decimal("0.01")), [])
+
+    def test_mismatch_reports_tax_rate_when_present(self):
+        item = {
+            "row": 2,
+            "description": "Widget A",
+            "quantity": Decimal("10"),
+            "unit_price": Decimal("1.50"),
+            "tax_rate": Decimal("0.10"),
+            "line_total": Decimal("15.00"),
+        }
+        mismatches = find_mismatches([item], Decimal("0.01"))
+        self.assertEqual(len(mismatches), 1)
+        self.assertEqual(mismatches[0]["tax_rate"], Decimal("0.10"))
+        self.assertEqual(mismatches[0]["expected_total"], Decimal("16.50"))
+
+    def test_item_without_tax_rate_key_is_untaxed(self):
+        item = {
+            "row": 2,
+            "description": "Widget A",
+            "quantity": Decimal("10"),
+            "unit_price": Decimal("1.50"),
+            "line_total": Decimal("15.00"),
+        }
+        self.assertEqual(expected_total(item), Decimal("15.00"))
 
 
 if __name__ == "__main__":
